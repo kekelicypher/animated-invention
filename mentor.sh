@@ -10,6 +10,14 @@ if [[ -z "$GEMINI_API_KEY" ]]; then
     exit 1
 fi
 
+# Check for dependencies
+for cmd in jq glow gum; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        echo "Error: $cmd is not installed. Please install it to continue."
+        exit 1
+    fi
+done
+
 # Use gemini-2.5-flash based on your available models
 API_URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?key=${GEMINI_API_KEY}&alt=sse"
 HISTORY_FILE=$(mktemp)
@@ -30,17 +38,23 @@ echo "[]" > "$HISTORY_FILE"
 trap 'rm -f "$HISTORY_FILE"' EXIT
 
 function show_banner() {
-    echo -e "\e[34m"
-    cat << "EOF"
+    clear
+    cat << "EOF" | gum style \
+        --foreground 34 \
+        --border-foreground 34 \
+        --border double \
+        --align center \
+        --margin "1 2" \
+        --padding "1 2"
    __  __   ______   __   __   ______  ______   ______
  /\ \/\ \ /\  ___\ /\ "-.\ \ /\__  _\/\  __ \ /\  == \
  \ \ \_\ \\ \  __\ \ \ \-.  \\/_/\ \/\ \ \/\ \\ \  __<
   \ \_____\\ \_____\\ \_\\"\_\   \ \_\ \ \_____\\ \_\ \_\
    \/_____/ \/_____/ \/_/ \/_/    \/_/  \/_____/ \/_/ /_/
 EOF
-    echo -e "\e[0m"
-    echo "--- Your Socratic Mentor is online (Gemini 2.5 Flash) ---"
-    echo "Tip: Use @filename to include code from a file. Type 'exit' to quit."
+
+    echo "--- Your Socratic Mentor is online (Gemini 2.5 Flash) ---" | gum style --foreground 212
+    echo "Tip: Use @filename to include code from a file. Type 'exit' to quit." | gum style --foreground 240
     echo ""
 }
 
@@ -83,16 +97,15 @@ function ask_gemini() {
         --argjson history "$(cat "$HISTORY_FILE")" \
         '{ "system_instruction": {"parts": [{"text": $sys}]}, "contents": $history, "generationConfig": { "temperature": 0.2, "maxOutputTokens": 1024 } }')
 
-    # Call API with streaming
-    echo -ne "\n\e[32mMentor is thinking...\e[0m\r"
+    # Call API with gum spin
+    local raw_response_file=$(mktemp)
+    local request_file=$(mktemp)
+    echo "$request_json" > "$request_file"
+
+    gum spin --spinner dot --title "Mentor is thinking..." -- curl -s -N -X POST "$API_URL" -H "Content-Type: application/json" -d @"$request_file" > "$raw_response_file"
+
     local mentor_text=""
-    local full_response=""
-
-    # Hide cursor
-    tput civis
-
     while IFS= read -r line; do
-        full_raw_response+="$line"$'\n'
         if [[ "$line" =~ ^data:\ (.*) ]]; then
             local json_data="${BASH_REMATCH[1]}"
             local chunk=$(echo "$json_data" | jq -j '.candidates[0].content.parts[0].text // empty' 2>/dev/null)
@@ -100,17 +113,12 @@ function ask_gemini() {
                 mentor_text+="$chunk"
             fi
         fi
-    done < <(curl -s -N -X POST "$API_URL" \
-        -H "Content-Type: application/json" \
-        -d "$request_json")
-
-    tput cnorm # Show cursor
-    echo -ne "\r\e[K" # Clear the "thinking..." line
+    done < "$raw_response_file"
+    
+    rm -f "$raw_response_file" "$request_file"
 
     if [[ -z "$mentor_text" ]]; then
-        echo -e "\n\e[31mError:\e[0m Unable to get response from Gemini."
-        local error_msg=$(echo "$full_response" | jq -c '.error // empty' 2>/dev/null)
-        [[ -n "$error_msg" ]] && echo "Details: $error_msg"
+        gum style --foreground 196 "Error: Unable to get response from Gemini."
         return
     fi
 
@@ -139,15 +147,25 @@ fi
 show_banner
 
 while true; do
-    read -p "You: " user_input
+    user_input=$(gum input --placeholder "What's on your mind? (type 'exit' to quit)")
+    
+    # Handle Ctrl+C or escape (non-zero exit code from gum)
+    if [[ $? -ne 0 ]]; then
+        gum style --foreground 212 "Goodbye! Happy coding."
+        break
+    fi
+
     if [[ "$user_input" == "exit" || "$user_input" == "quit" ]]; then
-        echo "Goodbye! Happy coding."
+        gum style --foreground 212 "Goodbye! Happy coding."
         break
     fi
     
     if [[ -z "$user_input" ]]; then
         continue
     fi
+
+    echo ""
+    gum style --foreground 34 "You: $user_input"
 
     ask_gemini "$user_input"
 done
